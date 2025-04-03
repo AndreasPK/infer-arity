@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
-module Main where
+module Simple where
 
 import Data.Text as T
 import Data.Map.Strict as M
