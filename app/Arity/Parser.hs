@@ -137,6 +137,8 @@ parseVar = label "var" $ do
     ty <- optional parseMTypeSig
     return $ Var name ty
 
+parseInt = label "intLiteral" $ PC.space >> IntLit <$> (decimal :: Parser Int)
+
 parseLam = label "lambda" $ do
     char_ '\\' >> space
     vars <- ((:[]) <$> try parseName) <|> parseNames
@@ -153,11 +155,19 @@ parseLet = label "let" $ do
     body <- parseExpr
     pure $ Let bndr rhs body
 
-parseApp = label "application" $ do
+parseApp = try parseAppE <|> parseAppV
+
+parseAppE, parseAppV :: Parser Expr
+parseAppE = label "application-exact" $ do
+    string "!app" >> space
+    f <- parseExpr
+    args <- parseList parseExpr
+    return $ AppExact f args
+
+parseAppV = label "application" $ do
     string "app" >> space
     f <- parseExpr
     args <- parseList parseExpr
-    return $ App f args
+    return $ AppVague f args
 
-parseInt = label "intLiteral" $ PC.space >> IntLit <$> (decimal :: Parser Int)
 

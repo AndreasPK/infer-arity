@@ -53,20 +53,20 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
-library
+executable infer
     -- Import common warning flags.
     import:           warnings
 
     -- .hs or .lhs file containing the Main module.
-    -- main-is:          Main.hs
+    main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
     other-modules:
         -- Simple
-        Arity
+        -- Arity
+        Arity.Inference
         Arity.Types
         Arity.Parser
-        Arity.Test
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

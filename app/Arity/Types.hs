@@ -19,8 +19,12 @@ import Text.PrettyPrint as Pretty hiding ((<>))
 import Text.PrettyPrint.HughesPJClass as Pretty hiding ((<>))
 
 type Name = T.Text
-newtype Arity = Arity Int
-    deriving (Eq,Ord,Show,Pretty)
+data Arity = KnownArity Int | TopArity
+    deriving (Eq,Ord,Show)
+
+instance Pretty Arity where
+    pPrint TopArity = "*"
+    pPrint (KnownArity n) = pPrint n
 
 instance Pretty T.Text where
     pPrint t = text . T.unpack $ t
@@ -33,7 +37,11 @@ data Expr
             , rhs :: Expr
             , body :: Expr
             }
-    | App Expr [Expr]
+
+    | AppExact Expr [Expr]
+
+    | AppVague Expr [Expr]
+
     | IntLit Int
     deriving Show
 
@@ -42,7 +50,8 @@ instance Pretty Expr where
         Var n ty -> pPrint n <> maybe mempty (\ty -> " ::" <+> pPrint ty) ty
         Lam n e -> parens ("\\" <> (pPrint n) <> "->" <> pPrint e)
         Let bndr rhs body -> "let" <+> pPrint bndr <+> "=" <+> pPrint rhs <+> "in" <+> pPrint body
-        App f args -> pPrint f <+> (pPrint args)
+        AppExact f args -> "!app" <+> pPrint f <+> (pPrint args)
+        AppVague f args -> "app" <+> pPrint f <+> (pPrint args)
         IntLit n -> pPrint n
 
 data TypeKind = Mono | Poly
@@ -55,23 +64,31 @@ data Type (k :: TypeKind) where
              , resTy :: MType }
              -> MType
     PrimTy :: { tyCon :: Name, arityTy :: MType} -> MType -- ^ Ty Name Arity
-    ArityTy :: Maybe Arity -> MType
+    ArityTy :: Arity -> MType
     ForAllTy :: [Name] -> MType -> PType
 
 mkArityTy :: Int -> MType
-mkArityTy n = ArityTy $ Just $ Arity n
+mkArityTy n = ArityTy $ KnownArity n
+
+-- We know how many arguments this thing expects ... maybe.
+funTyConArity_maybe :: Type k -> Maybe Arity
+funTyConArity_maybe ty = case ty of
+    ForAllTy _ mty -> funTyConArity_maybe mty
+    FunTy (ArityTy ar) _args _res -> Just ar
+    PrimTy _nm (ArityTy ar) -> Just ar
+    _ -> Nothing
 
 instance Pretty (Type k) where
     pPrint ty = case ty of
         TyVar n -> pPrint n
         FunTy arity args res -> parens
             (hcat $ List.intersperse ("->") (fmap pPrint $ args ++ [res])) <>
-            pPrint arity
-        PrimTy a n -> pPrint a<>pPrint n
+            brackets (pPrint arity)
+        PrimTy a n -> pPrint a<> brackets (pPrint n)
         ForAllTy ns ty -> "forall" <+> hsep (fmap pPrint ns) <+> "." <+> pPrint ty
         ArityTy m_a ->
-            let adoc = maybe "Nothing" (pPrint) m_a
-            in brackets ("a:" <> adoc)
+            let adoc = pPrint m_a
+            in ("a:" <> adoc)
 
 -- instance {-# OVERLAPPING #-} Pretty (Maybe Arity) where
 --     pPrint Nothing = mempty
