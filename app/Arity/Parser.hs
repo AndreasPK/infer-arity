@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Arity.Parser where
 
@@ -29,6 +30,16 @@ import Data.Char
 import Data.Foldable as Foldable
 
 type Parser a = Parsec () Text a
+
+instance ShowErrorComponent () where
+    showErrorComponent () = "()"
+
+myRunParser :: (Show a) => Parser a -> Text -> a
+myRunParser p expr_t = do
+    case runParser p "" expr_t of
+        Left e -> error $ errorBundlePretty e
+        Right expr -> do
+            expr
 
 char_ :: Char -> Parser ()
 char_ x = char x >> pure ()
@@ -94,17 +105,34 @@ parsePTypeSig = string "::" >> space >> parseForAll
 parseMType :: Parser MType
 parseMType = label "mtype" $ do
     head_ty <- try (parseParens parseMType) <|> parseTyAtom :: Parser MType
-    arrow_tys <- try arrows <|> pure [] :: Parser [MType]
-    let arity_ty = mkArityTy (Prelude.length arrow_tys)
-    pure $ if Foldable.null arrow_tys
-        then head_ty
-        else FunTy arity_ty (head_ty:(List.init arrow_tys)) (List.last arrow_tys)
+    arrow_tys <- optional arrows
+    pure $ case arrow_tys of
+        Nothing -> head_ty
+        Just (squiggly, tys) ->
+            let fun_kind = case squiggly of
+                    Squiggly -> mkFunArityKind (Prelude.length tys)
+                    Straight -> CurriedFun
+            in FunTy fun_kind (head_ty:(List.init tys)) (List.last tys)
 
-arrows :: Parser [MType]
+data IsSquiggly = Squiggly | Straight deriving (Show,Eq)
+
+arrows :: Parser (IsSquiggly,[MType])
 arrows = do
+    try (curried_arrows >>= \ts -> pure (Straight,ts)) <|>
+        (squiggly_arrows >>= \ts -> pure (Squiggly,ts))
+
+curried_arrows :: Parser ([MType])
+curried_arrows = do
     string "->" >> space
     ty <- try (parseParens parseMType) <|> parseTyAtom
-    tys <- (try arrows) <|> pure []
+    tys <- (try curried_arrows) <|> pure []
+    pure $ ty:tys
+
+squiggly_arrows :: Parser [MType]
+squiggly_arrows = do
+    string "~>" >> space
+    ty <- try (parseParens parseMType) <|> parseTyAtom
+    tys <- (try squiggly_arrows) <|> pure []
     pure $ ty:tys
 
 parseTyAtom :: Parser MType

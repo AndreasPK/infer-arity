@@ -4,6 +4,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Eta reduce" #-}
 
 module Arity.Types where
 
@@ -11,16 +13,24 @@ import Data.Text as T
 import Data.Map.Strict as M
 -- import Data.Set as S
 import Data.List as List
+import Data.Foldable as F
 
 import Control.Monad.State.Strict
+import GHC.Generics
 import Data.Maybe
 
 import Text.PrettyPrint as Pretty hiding ((<>))
 import Text.PrettyPrint.HughesPJClass as Pretty hiding ((<>))
+import Control.DeepSeq
 
 type Name = T.Text
 data Arity = KnownArity Int | TopArity
     deriving (Eq,Ord,Show)
+
+instance NFData Arity where
+    rnf a = case a of
+        KnownArity a -> rnf a
+        TopArity -> ()
 
 instance Pretty Arity where
     pPrint TopArity = "*"
@@ -43,52 +53,71 @@ data Expr
     | AppVague Expr [Expr]
 
     | IntLit Int
-    deriving Show
+    deriving (Show,Generic)
 
 instance Pretty Expr where
     pPrint e = case e of
         Var n ty -> pPrint n <> maybe mempty (\ty -> " ::" <+> pPrint ty) ty
         Lam n e -> parens ("\\" <> (pPrint n) <> "->" <> pPrint e)
         Let bndr rhs body -> "let" <+> pPrint bndr <+> "=" <+> pPrint rhs <+> "in" <+> pPrint body
-        AppExact f args -> "!app" <+> pPrint f <+> (pPrint args)
-        AppVague f args -> "app" <+> pPrint f <+> (pPrint args)
+        AppExact f args -> "!app" <+> parens (pPrint f) <+> (pPrint args)
+        AppVague f args -> "app" <+> parens (pPrint f) <+> (pPrint args)
         IntLit n -> pPrint n
 
-data TypeKind = Mono | Poly
+data TypeKind = Mono | Poly deriving (Eq,Generic)
+
+data FunKind = VectoredFun { fun_arityTy :: MType }
+             -- ^ The "squiggly arrow" in some literature.
+             | CurriedFun
+             -- ^ Regular haskell like functions
+    deriving (Eq,Show)
+
+instance NFData FunKind where
+    rnf k = case k of
+        CurriedFun -> ()
+        VectoredFun a -> rnf a
 
 data Type (k :: TypeKind) where
     -- TODO: Make arity another kind of type perhaps?
     TyVar :: Name -> MType
-    FunTy :: { arityTy :: MType
+    FunTy :: { funKind :: FunKind
              , argTys :: [MType]
              , resTy :: MType }
              -> MType
-    PrimTy :: { tyCon :: Name, arityTy :: MType} -> MType -- ^ Ty Name Arity
+    PrimTy :: { tyCon :: Name, type_arityTy :: MType} -> MType -- ^ Ty Name Arity
     ArityTy :: Arity -> MType
     ForAllTy :: [Name] -> MType -> PType
+
+instance NFData (Type k) where
+    rnf ty = case ty of
+        TyVar n -> rnf n
+        FunTy a b c -> rnf (a,b,c)
+        PrimTy a b -> rnf (a,b)
+        ArityTy a -> rnf a
+        ForAllTy a b -> rnf (a,b)
+
 
 mkArityTy :: Int -> MType
 mkArityTy n = ArityTy $ KnownArity n
 
--- We know how many arguments this thing expects ... maybe.
-funTyConArity_maybe :: Type k -> Maybe Arity
-funTyConArity_maybe ty = case ty of
-    ForAllTy _ mty -> funTyConArity_maybe mty
-    FunTy (ArityTy ar) _args _res -> Just ar
-    PrimTy _nm (ArityTy ar) -> Just ar
-    _ -> Nothing
+mkFunArityKind :: Int -> FunKind
+mkFunArityKind n = VectoredFun $ mkArityTy n
 
 instance Pretty (Type k) where
     pPrint ty = case ty of
         TyVar n -> pPrint n
-        FunTy arity args res -> parens
-            (hcat $ List.intersperse ("->") (fmap pPrint $ args ++ [res])) <>
-            brackets (pPrint arity)
-        PrimTy a n -> pPrint a<> brackets (pPrint n)
+        FunTy f_kind args res ->
+            case f_kind of
+                CurriedFun -> parens (hcat $ List.intersperse ("->") (fmap pPrint $ args ++ [res]))
+                VectoredFun arity ->
+                    parens ((hcat $ List.intersperse ("~>") (fmap pPrint args)) <> "~>" <> pPrint res) <> brackets (pPrint arity)
+        PrimTy a n -> pPrint a<>
+            if n == ArityTy (KnownArity 0) then mempty
+                else brackets (pPrint n)
         ForAllTy ns ty -> "forall" <+> hsep (fmap pPrint ns) <+> "." <+> pPrint ty
         ArityTy m_a ->
             let adoc = pPrint m_a
-            in ("a:" <> adoc)
+            in ("arity:" <> adoc)
 
 -- instance {-# OVERLAPPING #-} Pretty (Maybe Arity) where
 --     pPrint Nothing = mempty
@@ -102,10 +131,14 @@ type PType = Type Poly
 
 type Env = M.Map Name PType
 
+prettyMapping :: (Pretty k,Pretty v) => M.Map k v -> Doc
+prettyMapping m =
+    brackets $ hcat $ List.intersperse "," $ fmap (\(k,v) -> pPrint k <> "=>" <> pPrint v) (M.toList m)
+
 data InferState = InferState
     {   idx :: Int
     ,   env :: Env
-    }
+    } deriving Generic
 
 newtype InferM a = InferM (State InferState a)
     deriving (Functor, Applicative,Monad, MonadState InferState)
@@ -169,7 +202,7 @@ withVar (n,pty) act = do
 withVars :: [(Name,PType)] -> InferM a -> InferM a
 withVars pairs act = do
     e <- getEnv
-    withEnv (Prelude.foldl' (\e (k,v) -> M.insert k v e) e pairs) act
+    withEnv (F.foldl' (\e (k,v) -> M.insert k v e) e pairs) act
 
 withSubst :: Subst -> InferM a -> InferM a
 withSubst s act = do
@@ -186,27 +219,30 @@ class Substitutable a where
     subst :: Subst -> a -> a
 
 instance Substitutable Subst where
-    subst s x = M.mapWithKey (\k v -> fromMaybe v (M.lookup k s)) x
+    subst s x = fmap (subst s) x
+        -- M.mapWithKey (\k v -> subst s (fromMaybe v (M.lookup k s))) x
 
 compose :: Subst -> Subst -> Subst
 compose s1 s2 = compose_t s1 s2
 
 compose_t :: Subst -> Subst -> Subst
-compose_t s1 s2 =
+compose_t s2 s1 =
     let s1' = subst s2 s1
-    in M.union s2 s1'
+    in M.union s1' s2
 
+instance Substitutable (FunKind) where
+    subst s k = case k of
+        CurriedFun -> CurriedFun
+        VectoredFun arity -> VectoredFun (subst s arity)
 instance Substitutable (Type k) where
     subst s ty = case ty of
         TyVar n -> fromMaybe ty (M.lookup n s)
         FunTy arity args r -> FunTy (subst s arity) (fmap (subst s) args) (subst s r)
         PrimTy{} -> ty
         ForAllTy ns ty ->
-            let s' = Prelude.foldl' (flip M.delete) s ns
+            let s' = F.foldl' (flip M.delete) s ns
             in ForAllTy ns (subst s' ty)
         ArityTy _arity -> ty -- Always either nothing or a concrete value
-
-
 
 instance Substitutable InferState where
     subst s state = state { env = subst s (env state)}

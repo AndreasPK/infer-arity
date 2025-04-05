@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Arity where
 
@@ -23,6 +24,8 @@ import Text.PrettyPrint.HughesPJClass as Pretty hiding ((<>))
 import Arity.Types
 import Arity.Parser
 import Arity.Inference
+import Control.Monad
+import Control.DeepSeq
 
 ptype :: Expr -> IO ()
 ptype expr = do
@@ -31,17 +34,18 @@ ptype expr = do
     putStrLn $ render (pPrint res_ty)
     putStrLn ""
 
-parseInfer :: T.Text -> IO ()
-parseInfer expr_t = do
+parseInfer :: Text -> IO ()
+parseInfer = parseInfer' True
+
+parseInfer' :: Bool -> T.Text -> IO ()
+parseInfer' with_ast expr_t = do
     case runParser parseExpr "" expr_t of
         Left e -> putStrLn $ errorBundlePretty e
         Right expr -> do
             let res_ty = evalInfer $ (snd <$> infer expr) >>= \t -> abstract t
-            print res_ty
-            putStrLn $ render (pPrint res_ty)
-
-instance ShowErrorComponent () where
-    showErrorComponent _ = ""
+            deepseq res_ty $ do
+                when with_ast $ putStrLn $ "TyAst:\n\t" ++ show res_ty
+                putStrLn $ "ResTy:\n\t" ++ render (pPrint res_ty)
 
 justParse :: T.Text -> IO ()
 justParse expr_t = do
@@ -58,12 +62,39 @@ justParseP p expr_t = do
         Right expr -> do
             print expr
             putStrLn $ render $ pPrint expr
+
+parseInferDemo :: T.Text -> IO ()
+parseInferDemo expr = do
+    putStrLn $ T.unpack ("Expr:\n\t" <> expr)
+    parseInfer' False expr
+    putStrLn $ Prelude.replicate 80 '-'
+
+foo :: (Int -> (Int -> t)) -> Int -> t
+foo = \f x -> (f x) (x::Int)
 main :: IO ()
 main = do
-    justParse $
-        "let app2 = \\[z,f,x,y] -> app f [x,y] in app app2 [x :: Int]"
-    parseInfer $
-        "let app2 = \\[z,f,x,y] -> app f [x,y] in app app2 [x :: Int]"
+    -- forever $ do
+    --     putStr "Expr:"
+    --     s <- getLine
+    --     parseInferDemo $ T.pack s
+
+    mapM_ parseInferDemo $
+        [   -- "\\[x] -> x"
+        -- ,   "\\[f,x] -> app f [x]"
+        -- ,   "\\[f,x] -> !app f [x]"
+        -- ,   "\\[f,g,x] -> app g [app f [x]]"
+        -- ,   "\\[f,g,x] -> !app g [!app f [x]]"
+        -- ,   "\\[f,g,x,y] -> app (app f [x]) [y]"
+        -- ,   "\\[f,g,x] -> !app (app g [x]) [x]"
+
+        -- forall v2 v3 . ((Int[arity:0]~>v2)[arity:1]~>Int[arity:0]~>v3)[arity:2]
+        -- expected:
+           "\\[f,x] -> !app (!app f [x::Int]) [x]"
+        -- ,   "let apply2slow = \\[z,f,x,y] -> app f [x,y] in apply2slow"
+        -- ,   "let apply2fast = \\[z,f,x,y] -> app f [x,y] in apply2slow"
+        ]
+
+
         -- "let app2 = \\[f,x,y] -> app f [x,y] in app2"
     -- parseInfer "\\[f, x] -> app f [x]"
     -- parseInfer "\\[f, x] -> !app f [x]"
